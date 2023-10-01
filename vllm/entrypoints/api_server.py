@@ -16,6 +16,10 @@ TIMEOUT_TO_PREVENT_DEADLOCK = 1  # seconds.
 app = FastAPI()
 engine = None
 
+# Required by Vertex deployment.
+@app.get("/ping")
+async def ping() -> Response:
+    return Response(status_code=200)
 
 @app.post("/generate")
 async def generate(request: Request) -> Response:
@@ -27,6 +31,9 @@ async def generate(request: Request) -> Response:
     - other fields: the sampling parameters (See `SamplingParams` for details).
     """
     request_dict = await request.json()
+    is_on_vertex = "instances" in request_dict
+    if is_on_vertex:
+        request_dict = request_dict["instances"][0]
     prompt = request_dict.pop("prompt")
     stream = request_dict.pop("stream", False)
     sampling_params = SamplingParams(**request_dict)
@@ -59,7 +66,10 @@ async def generate(request: Request) -> Response:
     assert final_output is not None
     prompt = final_output.prompt
     text_outputs = [prompt + output.text for output in final_output.outputs]
-    ret = {"text": text_outputs}
+    if is_on_vertex:
+        ret = {"predictions": text_outputs}
+    else:
+        ret = {"text": text_outputs}
     return JSONResponse(ret)
 
 

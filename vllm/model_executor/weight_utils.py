@@ -182,7 +182,6 @@ def hf_model_weights_iterator(
         use_np_cache = True
     else:
         raise ValueError(f"Unknown load_format: {load_format}")
-
     hf_folder, hf_weights_files, use_safetensors = prepare_hf_model_weights(
         model_name_or_path,
         cache_dir=cache_dir,

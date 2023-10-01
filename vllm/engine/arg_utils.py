@@ -1,10 +1,50 @@
 import argparse
 import dataclasses
+import os
 from dataclasses import dataclass
 from typing import Optional, Tuple
-
+from google.cloud import storage
 from vllm.config import (CacheConfig, ModelConfig, ParallelConfig,
                          SchedulerConfig)
+import google.cloud.logging
+import logging
+# Instantiates a client
+client = google.cloud.logging.Client()
+
+# Retrieves a Cloud Logging handler based on the environment
+# you're running in and integrates the handler with the
+# Python logging module. By default this captures all logs
+# at INFO level and higher
+client.setup_logging()
+
+GCS_PREFIX = "gs://"
+
+
+def is_gcs_path(input_path: str) -> bool:
+    return input_path.startswith(GCS_PREFIX)
+
+
+def download_gcs_dir_to_local(gcs_dir: str, local_dir: str):
+    if os.path.isdir(local_dir):
+        return
+    # gs://bucket_name/dir
+    bucket_name = gcs_dir.split('/')[2]
+    prefix = gcs_dir[len(GCS_PREFIX  + bucket_name) :].strip('/')
+    client = storage.Client()
+    blobs = client.list_blobs(bucket_name, prefix=prefix)
+    for blob in blobs:
+        if blob.name[-1] == '/':
+            continue
+        file_path = blob.name[len(prefix) :].strip('/')
+        local_file_path = os.path.join(local_dir, file_path)
+        os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
+        if file_path.endswith(".bin"):
+            with open(local_file_path, 'w') as f:
+                f.write(f'{GCS_PREFIX}{bucket_name}/{prefix}/{file_path}')
+        else:
+            print(f"==> Download {gcs_dir}/{file_path} to {local_file_path}")
+            blob.download_to_filename(local_file_path)
+
 
 
 @dataclass
@@ -32,9 +72,13 @@ class EngineArgs:
     quantization: Optional[str] = None
 
     def __post_init__(self):
+        # override the model if you provide a artifacturi to the custom prediciton pmodel
+        self.model = os.environ.get('AIP_STORAGE_URI', self.model)
         if self.tokenizer is None:
             self.tokenizer = self.model
 
+        logging.info("llm engine init with model:", self.model)
+        logging.info("lAIP_STORAGE_URI:", os.environ.get('AIP_STORAGE_URI'))
     @staticmethod
     def add_cli_args(
             parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -171,6 +215,19 @@ class EngineArgs:
     def create_engine_configs(
         self,
     ) -> Tuple[ModelConfig, CacheConfig, ParallelConfig, SchedulerConfig]:
+
+        if is_gcs_path(self.tokenizer) and self.tokenizer != self.model:
+            local_dir = "/tmp/gcs_tokenizer"
+            download_gcs_dir_to_local(self.tokenizer, local_dir)
+            self.tokenizer = local_dir
+
+        if is_gcs_path(self.model):
+            local_dir = "/tmp/gcs_model"
+            download_gcs_dir_to_local(self.model, local_dir)
+
+        if self.tokenizer == self.model:
+            self.tokenizer = local_dir
+            self.model = local_dir
         model_config = ModelConfig(self.model, self.tokenizer,
                                    self.tokenizer_mode, self.trust_remote_code,
                                    self.download_dir, self.load_format,
